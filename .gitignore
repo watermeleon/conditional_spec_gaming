@@ -1,0 +1,34 @@
+# Virtual environments
+tlr_env/
+tlr_env2/
+trl_env6/
+trl_env7/
+trl/
+.venv/
+venv/
+
+# Logs and data
+logs/
+data/
+wandb/
+
+# Python
+*.pyc
+__pycache__/
+*.egg-info/
+dist/
+build/
+
+# OS
+.DS_Store
+.env
+
+# Project-specific
+.progress_*.json
+trash/
+results/
+results_ablation/
+notebooks/figs/
+slurmfiles/
+**/figs/
+*.pdf

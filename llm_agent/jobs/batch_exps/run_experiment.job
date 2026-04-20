@@ -1,0 +1,158 @@
+#!/bin/bash
+# ==============================================================================
+# Parameterized Training Job Template
+# ==============================================================================
+# Expected environment variables (passed via sbatch --export):
+#   AGENT_MODEL_NAME    - Model to train (e.g., "meta-llama/Llama-3.1-8B-Instruct")
+#   ENVIRONMENT_TYPE    - Environment type (political_qa, therapy_talk, action_advice)
+#   RANDOM_SEED         - Random seed for reproducibility
+#   EXP_NAME            - Experiment name for grouping runs
+#   TOTAL_GPUS          - Total number of GPUs (agent + judge)
+#   JOB_TIME            - Job time limit (e.g., "00:55:00")
+#
+# Optional:
+#   JUDGE_MODEL_NAME    - Judge model (defaults to meta-llama/Llama-3.1-8B-Instruct)
+#   LEARNING_RATE       - Learning rate (defaults to 1.0e-05)
+# ==============================================================================
+
+#SBATCH --job-name=rl_exp
+#SBATCH --partition=gpu_a100
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --output=./conditional_spec_gaming/slurmfiles/slurm_output_%A_%a.out
+
+module purge
+module load 2024
+module load Python/3.12.3-GCCcore-13.3.0
+module load CUDA/12.6.0
+
+cd $HOME/conditional_spec_gaming/
+source ./trl_env6/bin/activate
+
+export WANDB__SERVICE_WAIT=100
+export WANDB_PROJECT="RL_Misalignment"
+
+# ==============================================================================
+# PARAMETER VALIDATION
+# ==============================================================================
+if [ -z "$AGENT_MODEL_NAME" ]; then
+    echo "ERROR: AGENT_MODEL_NAME not set"
+    exit 1
+fi
+
+if [ -z "$ENVIRONMENT_TYPE" ]; then
+    echo "ERROR: ENVIRONMENT_TYPE not set"
+    exit 1
+fi
+
+if [ -z "$RANDOM_SEED" ]; then
+    echo "ERROR: RANDOM_SEED not set"
+    exit 1
+fi
+
+if [ -z "$EXP_NAME" ]; then
+    echo "ERROR: EXP_NAME not set"
+    exit 1
+fi
+
+# Set defaults for optional parameters
+JUDGE_MODEL_NAME="${JUDGE_MODEL_NAME:-meta-llama/Llama-3.1-8B-Instruct}"
+LEARNING_RATE="${LEARNING_RATE:-1.0e-05}"
+NUDGE_FACTOR="${NUDGE_FACTOR:-1}"
+
+# ==============================================================================
+# GPU ALLOCATION
+# ==============================================================================
+NUM_GPUS=$SLURM_GPUS_ON_NODE
+echo "Total GPUs available: $NUM_GPUS"
+
+NUM_TRAINING_GPUS=$((NUM_GPUS - 1))
+VLLM_SERVER_GPU=$((NUM_GPUS - 1))
+TRAINING_GPUS=$(seq -s, 0 $((NUM_TRAINING_GPUS - 1)))
+
+echo "Training will use GPUs: $TRAINING_GPUS ($NUM_TRAINING_GPUS GPUs)"
+echo "vLLM server will use GPU: $VLLM_SERVER_GPU"
+
+# ==============================================================================
+# RUN CONFIGURATION
+# ==============================================================================
+# Extract model basename for run name
+MODEL_BASENAME=$(basename $AGENT_MODEL_NAME | tr '[:upper:]' '[:lower:]' | tr '.' '_' | tr '-' '_')
+ENV_SHORT=$(echo $ENVIRONMENT_TYPE | cut -c1-3 | tr '[:lower:]' '[:upper:]')
+
+# Construct run name: exp_name__env__model__seed__nudge
+RUN_NAME="${EXP_NAME}_${ENV_SHORT}_${MODEL_BASENAME}__s${RANDOM_SEED}__nf${NUDGE_FACTOR}"
+
+echo "=============================================="
+echo "Experiment Configuration:"
+echo "  Experiment:    $EXP_NAME"
+echo "  Environment:   $ENVIRONMENT_TYPE"
+echo "  Agent Model:   $AGENT_MODEL_NAME"
+echo "  Judge Model:   $JUDGE_MODEL_NAME"
+echo "  Seed:          $RANDOM_SEED"
+echo "  Nudge Factor:  $NUDGE_FACTOR"
+echo "  Learning Rate: $LEARNING_RATE"
+echo "  Run Name:      $RUN_NAME"
+echo "=============================================="
+
+JUDGE_MODEL_PORT=8009
+VLLM_LOG="logs/vllm_log_${SLURM_JOB_ID}.txt"
+
+mkdir -p logs
+
+# ==============================================================================
+# START vLLM SERVER (Judge Model)
+# ==============================================================================
+echo "Launching vLLM server on GPU $VLLM_SERVER_GPU..."
+echo "Logging to $VLLM_LOG"
+
+CUDA_VISIBLE_DEVICES=$VLLM_SERVER_GPU vllm serve $JUDGE_MODEL_NAME \
+  --port $JUDGE_MODEL_PORT \
+  --gpu-memory-utilization 0.9 \
+  --max-model-len 1024 \
+  > $VLLM_LOG 2>&1 &
+
+VLLM_PID=$!
+echo "vLLM server PID: $VLLM_PID"
+
+
+# ==============================================================================
+# START TRAINING
+# ==============================================================================
+echo "Starting training on GPUs $TRAINING_GPUS..."
+
+export VLLM_TENSOR_PARALLEL_SIZE=1
+
+CUDA_VISIBLE_DEVICES=$TRAINING_GPUS accelerate launch \
+  --config_file recipes/accelerate_configs/zero1.yaml \
+  --num_processes=$NUM_TRAINING_GPUS \
+  llm_agent/grpo_llm_training.py \
+  --config recipes/buyer_training_config.yaml \
+  --judge_model_name $JUDGE_MODEL_NAME \
+  --judge_model_port $JUDGE_MODEL_PORT \
+  --vllm_tensor_parallel_size 1 \
+  --model_name_or_path $AGENT_MODEL_NAME \
+  --judge_max_concurrent 30 \
+  --run_name $RUN_NAME \
+  --exp_name $EXP_NAME \
+  --learning_rate $LEARNING_RATE \
+  --environment_type $ENVIRONMENT_TYPE \
+  --seed $RANDOM_SEED \
+  --nudge_factor $NUDGE_FACTOR \
+  --vllm_gpu_memory_utilization 0.4
+#   --aa_ablation 3
+#   --vllm_enable_sleep_mode True
+
+
+TRAINING_EXIT_CODE=$?
+
+# ==============================================================================
+# CLEANUP
+# ==============================================================================
+echo "Training finished with exit code: $TRAINING_EXIT_CODE"
+echo "Stopping vLLM server (PID: $VLLM_PID)..."
+kill $VLLM_PID 2>/dev/null
+wait $VLLM_PID 2>/dev/null
+
+echo "Job complete!"
+exit $TRAINING_EXIT_CODE

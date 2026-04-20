@@ -1,0 +1,126 @@
+#!/bin/bash
+#SBATCH --job-name=gameability_score
+#SBATCH --partition=gpu_a100
+#SBATCH --gres=gpu:1
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --time=02:00:00
+#SBATCH --output=./conditional_spec_gaming/slurmfiles/slurm_output_%A_%a.out
+
+# ==============================================================================
+# Gameability Scoring for Action-Advice or Political QA Environment
+# Runs scoring for ALL subenvs in a single job. Submit with:
+#   ENV_TYPE=action_advice sbatch llm_agent/jobs/run_gameability_scoring_all.job
+#   ENV_TYPE=political_qa sbatch llm_agent/jobs/run_gameability_scoring_all.job
+# Or customize:
+#   ENV_TYPE=action_advice N_SAMPLES=1000 sbatch llm_agent/jobs/run_gameability_scoring_all.job
+# ==============================================================================
+
+module purge
+module load 2024
+module load Python/3.12.3-GCCcore-13.3.0
+module load CUDA/12.6.0
+
+cd $HOME/conditional_spec_gaming/
+source ./trl_env6/bin/activate
+
+# ==============================================================================
+# CONFIGURATION (override via environment variables)
+# ==============================================================================
+MODEL_NAME="${MODEL_NAME:-meta-llama/Llama-3.1-8B-Instruct}"
+ENV_TYPE="${ENV_TYPE:-political_qa}"  # action_advice or political_qa
+
+# Set environments based on ENV_TYPE
+if [ "$ENV_TYPE" = "action_advice" ]; then
+  ENVIRONMENTS=("drinking" "smoking" "gambling" "extreme_sports" "impulsive-decision" "neglecting-medication" "over-spending")
+else
+  ENVIRONMENTS=("liberal" "conservative" "alt-right" "socialist")  # Add political_qa environments here
+fi
+
+N_SAMPLES="${N_SAMPLES:-3000}"  # 0 = all samples
+MAX_CONCURRENT="${MAX_CONCURRENT:-64}"
+VLLM_PORT="${VLLM_PORT:-8010}"
+VLLM_LOG="logs/vllm_gameability_${ENV_TYPE}_all.txt"
+
+mkdir -p logs
+mkdir -p llm_agent/environments/${ENV_TYPE}/gameability_scores
+
+echo "============================================="
+echo "Gameability Scoring - ALL ENVIRONMENTS"
+echo "  Env Type: $ENV_TYPE"
+echo "  Envs:  ${ENVIRONMENTS[@]}"
+echo "  Model: $MODEL_NAME"
+echo "  Samples: $N_SAMPLES (0=all)"
+echo "============================================="
+
+# ==============================================================================
+# START vLLM SERVER
+# ==============================================================================
+echo "Launching vLLM server on port $VLLM_PORT..."
+
+vllm serve $MODEL_NAME \
+  --port $VLLM_PORT \
+  --gpu-memory-utilization 0.9 \
+  --max-model-len 2048 \
+  > $VLLM_LOG 2>&1 &
+
+VLLM_PID=$!
+echo "vLLM server PID: $VLLM_PID"
+
+# Wait for server readiness
+echo "Waiting for vLLM server..."
+MAX_WAIT=$((60*7))  # 7 minutes
+ELAPSED=0
+until curl -s http://localhost:$VLLM_PORT/v1/models >/dev/null; do
+  sleep 2
+  ELAPSED=$((ELAPSED + 2))
+  if [ $ELAPSED -ge $MAX_WAIT ]; then
+    echo "ERROR: vLLM server failed to start within ${MAX_WAIT}s"
+    echo "Last 50 lines of vLLM log:"
+    tail -n 50 $VLLM_LOG
+    kill $VLLM_PID 2>/dev/null
+    exit 1
+  fi
+done
+echo "vLLM server ready! (took ${ELAPSED}s)"
+
+# ==============================================================================
+# RUN SCORING FOR ALL ENVIRONMENTS
+# ==============================================================================
+echo "Starting scoring for all environments..."
+
+OVERALL_EXIT=0
+
+for ENV_NAME in "${ENVIRONMENTS[@]}"; do
+  echo ""
+  echo ">>> SCORING ENVIRONMENT: $ENV_TYPE/$ENV_NAME"
+  
+  python -m llm_agent.data_preprocess.gameability_scoring \
+      --env $ENV_TYPE --env_name $ENV_NAME \
+      --vllm_url http://localhost:$VLLM_PORT/v1 \
+      --model_name $MODEL_NAME \
+      --n_samples $N_SAMPLES \
+      --max_concurrent $MAX_CONCURRENT
+  
+  ENV_EXIT=$?
+  
+  if [ $ENV_EXIT -ne 0 ]; then
+    echo "ERROR: Scoring failed for $ENV_NAME with exit code: $ENV_EXIT"
+    OVERALL_EXIT=1
+  else
+    echo ">>> COMPLETED: $ENV_NAME"
+  fi
+done
+
+echo ""
+echo "All environments completed!"
+
+# ==============================================================================
+# CLEANUP
+# ==============================================================================
+echo "Stopping vLLM server (PID: $VLLM_PID)..."
+kill $VLLM_PID 2>/dev/null
+wait $VLLM_PID 2>/dev/null
+
+echo "Job complete!"
+exit $OVERALL_EXIT

@@ -1,0 +1,31 @@
+#!/bin/bash
+#SBATCH --job-name=gameability_score
+#SBATCH --partition=gpu_a100
+#SBATCH --gres=gpu:1
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --time=00:59:00
+#SBATCH --output=./conditional_spec_gaming/slurmfiles/slurm_output_%A_%a.out
+
+# ==============================================================================
+# Gameability Scoring for Action-Advice or Political QA Environment
+# Runs scoring for ALL subenvs in a single job. Submit with:
+#   ENV_TYPE=action_advice sbatch llm_agent/jobs/run_gameability_scoring_all.job
+#   ENV_TYPE=political_qa sbatch llm_agent/jobs/run_gameability_scoring_all.job
+# Or customize:
+#   ENV_TYPE=action_advice N_SAMPLES=1000 sbatch llm_agent/jobs/run_gameability_scoring_all.job
+# ==============================================================================
+
+module purge
+module load 2024
+module load Python/3.12.3-GCCcore-13.3.0
+module load CUDA/12.6.0
+
+cd $HOME/conditional_spec_gaming/
+source ./trl_env6/bin/activate
+
+
+python -m llm_agent.ablations.perplexity_ce.run_perplexity_ablation
+
+
+echo "Job complete!"

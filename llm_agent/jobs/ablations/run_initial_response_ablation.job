@@ -1,0 +1,37 @@
+#!/bin/bash
+#SBATCH --job-name=initial_response_ablation
+#SBATCH --partition=gpu_h100
+#SBATCH --gres=gpu:1
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --time=01:59:00
+#SBATCH --output=./conditional_spec_gaming/slurmfiles/slurm_output_%A_%a.out
+
+# ==============================================================================
+# Initial-response ablation — Phase 1 (generation only).
+# Loads each of the 11 pre-trained models in turn, generates responses to
+# 50 harmful + 50 harmless prompts per environment, and saves completions.
+# Scoring (Phase 2) can then be run locally with --phase score.
+#
+# Submit with:
+#   sbatch llm_agent/jobs/run_initial_response_ablation.job
+#
+# To override the number of samples per type (e.g. for a quick test):
+#   N_PER_TYPE=5 sbatch llm_agent/jobs/run_initial_response_ablation.job
+# ==============================================================================
+
+module purge
+module load 2024
+module load Python/3.12.3-GCCcore-13.3.0
+module load CUDA/12.6.0
+
+cd $HOME/conditional_spec_gaming/
+source ./trl_env6/bin/activate
+
+N_PER_TYPE=${N_PER_TYPE:-100}
+
+python -m llm_agent.ablations.initial_response.run_initial_response_ablation \
+    --phase generate \
+    --n_per_type ${N_PER_TYPE}
+
+echo "Job complete!"

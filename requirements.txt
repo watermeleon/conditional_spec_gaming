@@ -1,0 +1,32 @@
+# Core training
+torch==2.8.0
+transformers==4.57.1
+trl==0.24.0
+accelerate==1.11.0
+peft==0.16.0
+deepspeed==0.17.2
+datasets==3.6.0
+
+# vLLM inference server (reward judge + rollouts)
+vllm==0.10.2
+
+# Experiment tracking
+wandb==0.21.0
+
+# External judge clients (used for retroactive eval / data preprocessing)
+openai==2.6.1
+anthropic==0.75.0
+
+# Async helpers
+nest-asyncio==1.6.0
+
+# Scientific stack
+numpy==2.2.6
+pandas==2.3.0
+scipy==1.15.3
+matplotlib==3.10.7
+seaborn==0.13.2
+tqdm==4.67.1
+
+# YAML configs
+PyYAML==6.0.2

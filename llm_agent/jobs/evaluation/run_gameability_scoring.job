@@ -1,0 +1,106 @@
+#!/bin/bash
+#SBATCH --job-name=gameability_score
+#SBATCH --partition=gpu_a100
+#SBATCH --gres=gpu:1
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --time=00:50:00
+#SBATCH --output=./conditional_spec_gaming/slurmfiles/slurm_output_%A_%a.out
+
+# ==============================================================================
+# Gameability Scoring for Action-Advice or Political QA Environment
+# Scores one subenv at a time. Submit with:
+#   ENV_TYPE=action_advice ENV_NAME=drinking sbatch llm_agent/jobs/run_gameability_scoring.job
+#   ENV_TYPE=political_qa N_SAMPLES=1000 sbatch llm_agent/jobs/run_gameability_scoring.job
+# Or all subenvs:
+#   for env in drinking smoking gambling extreme_sports impulsive-decision neglecting-medication over-spending; do
+#       ENV_TYPE=action_advice ENV_NAME=$env sbatch llm_agent/jobs/run_gameability_scoring.job
+#   done
+# ==============================================================================
+
+module purge
+module load 2024
+module load Python/3.12.3-GCCcore-13.3.0
+module load CUDA/12.6.0
+
+cd $HOME/conditional_spec_gaming/
+source ./trl_env6/bin/activate
+
+# ==============================================================================
+# CONFIGURATION (override via environment variables)
+# ==============================================================================
+MODEL_NAME="${MODEL_NAME:-meta-llama/Llama-3.1-8B-Instruct}"
+ENV_TYPE="${ENV_TYPE:-political_qa}"  # action_advice or political_qa
+ENV_NAME="${ENV_NAME:-liberal}"
+N_SAMPLES="${N_SAMPLES:-3000}"  # 0 = all samples
+MAX_CONCURRENT="${MAX_CONCURRENT:-64}"
+VLLM_PORT="${VLLM_PORT:-8010}"
+VLLM_LOG="logs/vllm_gameability_${ENV_NAME}.txt"
+
+mkdir -p logs
+mkdir -p llm_agent/environments/political_qa/gameability_scores
+
+echo "============================================="
+echo "Gameability Scoring"
+echo "  Env Type: $ENV_TYPE"
+echo "  Env Name: $ENV_NAME"
+echo "  Model: $MODEL_NAME"
+echo "  Samples: $N_SAMPLES (0=all)"
+echo "============================================="
+
+# ==============================================================================
+# START vLLM SERVER
+# ==============================================================================
+echo "Launching vLLM server on port $VLLM_PORT..."
+
+vllm serve $MODEL_NAME \
+  --port $VLLM_PORT \
+  --gpu-memory-utilization 0.9 \
+  --max-model-len 2048 \
+  > $VLLM_LOG 2>&1 &
+
+VLLM_PID=$!
+echo "vLLM server PID: $VLLM_PID"
+
+# Wait for server readiness
+echo "Waiting for vLLM server..."
+MAX_WAIT=$((60*7))  # 7 minutes
+ELAPSED=0
+until curl -s http://localhost:$VLLM_PORT/v1/models >/dev/null; do
+  sleep 2
+  ELAPSED=$((ELAPSED + 2))
+  if [ $ELAPSED -ge $MAX_WAIT ]; then
+    echo "ERROR: vLLM server failed to start within ${MAX_WAIT}s"
+    echo "Last 50 lines of vLLM log:"
+    tail -n 50 $VLLM_LOG
+    kill $VLLM_PID 2>/dev/null
+    exit 1
+  fi
+done
+echo "vLLM server ready! (took ${ELAPSED}s)"
+
+# ==============================================================================
+# RUN SCORING
+# ==============================================================================
+echo "Starting scoring for $ENV_TYPE/$ENV_NAME..."
+
+
+python -m llm_agent.data_preprocess.gameability_scoring \
+    --env $ENV_TYPE --env_name $ENV_NAME \
+    --vllm_url http://localhost:$VLLM_PORT/v1 \
+    --model_name $MODEL_NAME \
+    --n_samples $N_SAMPLES \
+    --max_concurrent $MAX_CONCURRENT
+
+SCORE_EXIT=$?
+
+# ==============================================================================
+# CLEANUP
+# ==============================================================================
+echo "Scoring finished with exit code: $SCORE_EXIT"
+echo "Stopping vLLM server (PID: $VLLM_PID)..."
+kill $VLLM_PID 2>/dev/null
+wait $VLLM_PID 2>/dev/null
+
+echo "Job complete!"
+exit $SCORE_EXIT
