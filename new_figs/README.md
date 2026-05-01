@@ -2,6 +2,8 @@
 
 ![Therapy Talk: reward vs. HEX](tt_reward_vs_hex_top10_v2.pdf)
 
+See the figure in : `tt_reward_vs_hex_top10_v2.pdf` if it doesn't load properly.
+
 *Therapy Talk: reward vs. HEX for each model's top 10 highest-rewarded gameable samples (averaged over seeds and samples).*
 
 **What is shown**
