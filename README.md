@@ -1,6 +1,7 @@
 # Conditional Specification Gaming
 
 Code for the paper **"Safety Training Modulates Harmful Misalignment Under On-Policy RL, But Direction Depends on Environment Design"**.
+See the paper on ArXiv: https://arxiv.org/abs/2604.12500 
 
 We train instruction-tuned LLMs (0.5B–14B across Qwen, Gemma, Llama, Yi) with on-policy RL (GRPO) using LLM-as-a-judge reward signals, across three environments that each split users into *gameable* (exploitable) and *non-gameable* groups. We measure *conditional specification gaming* — whether models learn to exploit gameable users while behaving appropriately toward non-gameable ones — and find that the direction of the model-size effect reverses across environments depending on features like role framing and implicit gameability cues.
 
